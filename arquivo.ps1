@@ -1,97 +1,65 @@
-# -------------------------------------------
-# Parte 1 - Criação Automatizada de Usuários e Grupos
-# -------------------------------------------
+# Definindo a configuração do domínio e caminho do arquivo CSV
+$dominioControlador = "192.168.52.137"  # IP do controlador de domínio
+$dominio = "RhName.com"  # Nome do domínio
+$arquivoCSV = "C:\Caminho\Para\usuarios.csv"  # Caminho do arquivo CSV com dados dos usuários
 
-# 1. Definindo os grupos a serem criados
-$grupos = @("TI", "Comercial", "Financeiro", "Compras", "Producao")
+# Carregar os dados do arquivo CSV para um array de usuários
+$usuarios = Get-Content $arquivoCSV
 
-# 2. Criando os grupos
-foreach ($grupo in $grupos) {
-    # Verificando se o grupo já existe
-    if (-not (Get-ADGroup -Filter {Name -eq $grupo})) {
-        # Criando o grupo
-        New-ADGroup -Name $grupo -GroupScope Global -Path "OU=Grupos,DC=dominio,DC=com"
-        Write-Host "Grupo $grupo criado com sucesso."
-    } else {
-        Write-Host "Grupo $grupo já existe."
+# Lista de grupos de departamentos no AD
+$grupos = @("Desenvolvimento", "Infraestrutura", "Backup", "Seguranca", "Usuarios", "Producao", "Aplicacoes")
+
+# Criar os usuários e adicioná-los aos grupos
+foreach ($linha in $usuarios) {
+    # Separar o nome completo e departamento usando o delimitador ";"
+    $dados = $linha.Split(';')
+    $nomeCompleto = $dados[0]  # Nome completo do usuário
+    $departamento = $dados[1]   # Departamento (grupo) do usuário
+
+    # Separar o nome e sobrenome do nome completo usando "_"
+    $nome, $sobrenome = $nomeCompleto.Split('_')
+
+    # Criar o usuário no AD com o nome e senha padrão
+    $senha = ConvertTo-SecureString "Senai@134" -AsPlainText -Force  # Definir senha do usuário
+    New-ADUser -SamAccountName $nomeCompleto -UserPrincipalName "$nomeCompleto@$dominio" `
+               -Name "$nome $sobrenome" -GivenName $nome -Surname $sobrenome `
+               -Path "CN=Users,DC=RhName,DC=com" -AccountPassword $senha `
+               -Enabled $true -ChangePasswordAtLogon $true -Server $dominioControlador  # Criar o usuário no AD
+
+    # Verificar se o departamento existe e adicionar o usuário ao grupo correspondente
+    if ($grupos -contains $departamento) {
+        Add-ADGroupMember -Identity $departamento -Members $nomeCompleto -Server $dominioControlador  # Adicionar ao grupo
+        Write-Host "Usuário $nome $sobrenome criado e adicionado ao grupo $departamento."  # Mensagem de sucesso
     }
 }
 
-# 3. Criando os usuários (20 usuários de exemplo)
-for ($i = 1; $i -le 20; $i++) {
-    $nome = "usuario$i.sobrenome"
-    $senha = ConvertTo-SecureString "Senai@134" -AsPlainText -Force
-
-    # Criando o usuário no AD
-    New-ADUser -SamAccountName $nome -UserPrincipalName "$nome@dominio.com" `
-               -Name $nome -GivenName "Usuario $i" -Surname "Sobrenome" `
-               -Path "OU=Usuarios,DC=dominio,DC=com" -AccountPassword $senha `
-               -Enabled $true -ChangePasswordAtLogon $true -PassThru
-1
-    # Atribuindo o usuário ao grupo (distribuição por rodízio)
-    $grupo = $grupos[$i % $grupos.Length]
-    Add-ADGroupMember -Identity $grupo -Members $nome
-    Write-Host "Usuário $nome criado e adicionado ao grupo $grupo."
+# Monitoramento de contas inativas - Definindo um período de inatividade em dias (10 dias aqui)
+$periodoInatividade = 10  # Ajuste o valor conforme necessário
+$contasInativas = Get-ADUser -Filter {Enabled -eq $true} -Properties LastLogonDate -Server $dominioControlador | Where-Object {
+    $_.LastLogonDate -lt (Get-Date).AddDays(-$periodoInatividade)  # Filtrando contas que não logaram nos últimos 10 dias
 }
 
-# -------------------------------------------
-# Parte 2 - Monitoramento e Limpeza de Contas Inativas
-# -------------------------------------------
-
-# 1. Definindo o período de inatividade (em dias)
-$periodoInatividade = 10 # Para testes rápidos (ajustar conforme necessário)
-
-# 2. Obtendo contas inativas
-$contasInativas = Get-ADUser -Filter {Enabled -eq $true} -Properties LastLogonDate | Where-Object {
-    $_.LastLogonDate -lt (Get-Date).AddDays(-$periodoInatividade)
+# Desativar contas inativas
+$contasInativas | ForEach-Object {
+    Disable-ADAccount -Identity $_.SamAccountName -Server $dominioControlador  # Desabilitar a conta
+    Write-Host "Conta $_.SamAccountName desativada."  # Mensagem de desativação
 }
 
-# 3. Gerando relatório de contas inativas
-$relatorio = $contasInativas | Select-Object Name, SamAccountName, LastLogonDate
-
-# Exibindo relatório
-$relatorio | Format-Table -AutoSize
-
-# 4. Desativando as contas inativas
-foreach ($conta in $contasInativas) {
-    Disable-ADAccount -Identity $conta.SamAccountName
-    Write-Host "Conta $($conta.SamAccountName) desativada."
-}
-
-# 5. Enviando notificação para o administrador
-$administradorEmail = "admin@dominio.com"
-Send-MailMessage -To $administradorEmail -From "noreply@dominio.com" `
+# Enviar notificação por email para o administrador sobre as contas inativas desativadas
+Send-MailMessage -To "jb.goncalves2406@gmail.com -From "noreply@RhName.com" `
                  -Subject "Contas Inativas Desativadas" `
-                 -Body "As contas inativas foram desativadas. Verifique o relatório gerado." `
-                 -SmtpServer "smtp.dominio.com"
+                 -Body "As contas inativas foram desativadas." `
+                 -SmtpServer "smtp.RhName.com"  # Enviar email para notificar sobre as contas desativadas
 
-# -------------------------------------------
-# Parte 3 - Desabilitação de Contas com Base em Lista do RH
-# -------------------------------------------
-
-# 1. Carregando a lista de usuários desligados do arquivo CSV
-$usuariosDesligados = Import-Csv -Path "C:\Caminho\usuarios_desligados.csv"
-
-# 2. Processando cada usuário da lista
-foreach ($usuario in $usuariosDesligados) {
-    # Verificando se o usuário existe no AD
-    $conta = Get-ADUser -Filter {SamAccountName -eq $usuario.usuário_desligado}
-
+# Desabilitar contas de usuários desligados a partir de um arquivo CSV
+$usuariosDesligados = Import-Csv -Path "C:\Users\Administrator\Documents.csv"  # Carregar a lista de usuários desligados do CSV
+$usuariosDesligados | ForEach-Object {
+    # Procurar no AD o usuário com o SamAccountName correspondente
+    $conta = Get-ADUser -Filter {SamAccountName -eq $_.usuário_desligado} -Server $dominioControlador
     if ($conta) {
-        # Desabilitando a conta
-        Disable-ADAccount -Identity $conta.SamAccountName
-        Write-Host "Conta $($usuario.usuário_desligado) desabilitada com sucesso."
+        Disable-ADAccount -Identity $conta.SamAccountName -Server $dominioControlador  # Desabilitar a conta se encontrada
+        Write-Host "Conta $_.usuário_desligado desabilitada."  # Mensagem de sucesso
     } else {
-        Write-Host "Usuário $($usuario.usuário_desligado) não encontrado no AD."
-    }
-}
-
-# 3. Gerando log de desabilitação
-$log = $usuariosDesligados | ForEach-Object {
-    $conta = Get-ADUser -Filter {SamAccountName -eq $_.usuário_desligado}
-    if ($conta) {
-        "$($_.usuário_desligado) - Desabilitada"
-    } else {
-        "$($_.usuário_desligado) - Não encontrada"
+        Write-Host "Usuário $_.usuário_desligado não encontrado."  # Mensagem de erro se não encontrado
     }
 }
